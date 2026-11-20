@@ -2893,7 +2893,7 @@ index c431d6c..f4d7bde 100644
      }
  }
 diff --git a/STV/Playback/Engine/AVPlayerEngine.swift b/STV/Playback/Engine/AVPlayerEngine.swift
-index 9c2723a..ced91f9 100644
+index 9c2723a..d64dfa5 100644
 --- a/STV/Playback/Engine/AVPlayerEngine.swift
 +++ b/STV/Playback/Engine/AVPlayerEngine.swift
 @@ -3,8 +3,7 @@ import AVKit
@@ -2915,15 +2915,26 @@ index 9c2723a..ced91f9 100644
      private var audioGroup: AVMediaSelectionGroup?
      private var legibleGroup: AVMediaSelectionGroup?
      private(set) var audioTracks: [MediaTrack] = []
-@@ -48,6 +49,7 @@ import UIKit
+@@ -39,7 +40,6 @@ import UIKit
+         view.isUserInteractionEnabled = false
+         view.playerLayer.player = player
+         view.playerLayer.videoGravity = .resizeAspect
+-        transport.bind(player)
+         transport.onRequest = { [weak self] in self?.onPlaybackRequested?($0) }
+     }
+ 
+@@ -48,16 +48,22 @@ import UIKit
      func load(_ src: PlaybackCoordinator.Source, stream: HGStream?, start: Double?, title: String) async throws {
          generation += 1
          let gen = generation
 +        tracksTask?.cancel(); tracksTask = nil; loadedTrackCount = nil
          transport.acceptingRequests = false
++        transport.bind(player)
++        view.playerLayer.player = player
          transport.expectPaused(true)
++        statusObservation?.invalidate()
          statusObservation = nil
-@@ -55,9 +57,11 @@ import UIKit
+         guard let item = PlaybackCoordinator.makeItem(src) else { throw URLError(.badURL) }
          item.nowPlayingInfo = [MPMediaItemPropertyTitle: title]
          audioGroup = nil; legibleGroup = nil; audioTracks = []; subtitleTracks = []; selectedAudio = nil; selectedSubtitle = nil
          player.replaceCurrentItem(with: item)
@@ -2937,7 +2948,7 @@ index 9c2723a..ced91f9 100644
                  #if DEBUG
                  let ns = item.error as NSError?
                  let under = (ns?.userInfo[NSUnderlyingErrorKey] as? NSError).map { "\($0.domain) \($0.code)" } ?? "-"
-@@ -76,9 +80,10 @@ import UIKit
+@@ -76,9 +82,10 @@ import UIKit
          if let start, start > 0 {
              await player.seek(to: CMTime(seconds: start, preferredTimescale: 600))
          }
@@ -2949,21 +2960,24 @@ index 9c2723a..ced91f9 100644
      }
  
      func play(rate: Double) {
-@@ -101,11 +106,11 @@ import UIKit
+@@ -101,11 +108,14 @@ import UIKit
      func stop() {
          transport.acceptingRequests = false
          generation += 1
 +        tracksTask?.cancel(); tracksTask = nil; loadedTrackCount = nil
++        statusObservation?.invalidate()
          statusObservation = nil
          if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
          endObserver = nil
 -        player.pause()
 -        player.replaceCurrentItem(with: nil)
++        transport.bind(nil)
++        view.playerLayer.player = nil
 +        if player.currentItem != nil { player.replaceCurrentItem(with: nil) }
      }
  
      var currentTime: Double { player.currentTime().seconds.isFinite ? player.currentTime().seconds : 0 }
-@@ -130,13 +135,31 @@ import UIKit
+@@ -130,13 +140,31 @@ import UIKit
  
      // MARK: Tracks (AVMediaSelection)
  
@@ -2997,7 +3011,7 @@ index 9c2723a..ced91f9 100644
              legibleGroup = g
              subtitleTracks = g.options.enumerated().map { MediaTrack(id: $0.offset, title: $0.element.displayName, language: $0.element.extendedLanguageTag) }
              selectedSubtitle = item.currentMediaSelection.selectedMediaOption(in: g).flatMap { g.options.firstIndex(of: $0) }
-@@ -160,7 +183,14 @@ import UIKit
+@@ -160,7 +188,14 @@ import UIKit
          guard let item = player.currentItem else { return PlayerTech() }
          var t = await PlayerTech.read(item, stream: stream)
          t.engine = kind.short
@@ -3645,7 +3659,7 @@ index 4ea2fe7..423b4b7 100644
                  return line.replacingOccurrences(of: m[1], with: local(m[1], kind))
              }
 diff --git a/STV/Playback/PlaybackCoordinator.swift b/STV/Playback/PlaybackCoordinator.swift
-index dccd779..65131b2 100644
+index dccd779..a936774 100644
 --- a/STV/Playback/PlaybackCoordinator.swift
 +++ b/STV/Playback/PlaybackCoordinator.swift
 @@ -1,14 +1,11 @@
@@ -3750,7 +3764,15 @@ index dccd779..65131b2 100644
      private var prepared: [Int: Source] = [:]
      private var tasks: [Int: Task<Source, Error>] = [:]
      private var observer: Any?
-@@ -160,8 +147,8 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -151,7 +138,6 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+     private var statusObservation: NSKeyValueObservation?
+     private(set) var waitingForMedia = false
+     private var audioObservers: [NSObjectProtocol] = []
+-    private var nowPlaying: MPNowPlayingSession?
+     private(set) var pipActive = false
+     var pipError: String?
+     private var restoringPiP = false
+@@ -160,8 +146,8 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
      private var recoverInterruptedTransport = false
      private var audioSessionActive = false
      private var continuePiP = false
@@ -3761,7 +3783,22 @@ index dccd779..65131b2 100644
  
      init(series: HGSeries, engine: PlayerEngine? = nil, resolve: ((Int) async throws -> Source)? = nil) {
          self.series = series
-@@ -203,7 +190,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -175,14 +161,6 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+ 
+     func start() {
+         guard observer == nil else { return }
+-        let player = av.player
+-        let session = MPNowPlayingSession(players: [player])
+-        session.automaticallyPublishesNowPlayingInfo = true
+-        nowPlaying = session
+-        let commands = session.remoteCommandCenter
+-        commands.playCommand.addTarget(self, action: #selector(remotePlay))
+-        commands.pauseCommand.addTarget(self, action: #selector(remotePause))
+-        commands.togglePlayPauseCommand.addTarget(self, action: #selector(remoteToggle))
+         #if DEBUG
+         // UI tests: an interruption that never ends (STV_FAKE_INTERRUPT=<seconds after start>).
+         if let s = ProcessInfo.processInfo.environment["STV_FAKE_INTERRUPT"].flatMap(Double.init) {
+@@ -203,7 +181,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
              }
          })
          bindTransportRequests(engine)
@@ -3770,7 +3807,7 @@ index dccd779..65131b2 100644
          let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
              MainActor.assumeIsolated { self?.tick() }
          }
-@@ -213,7 +200,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -213,7 +191,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
          registerSharedCommands()
      }
  
@@ -3779,7 +3816,7 @@ index dccd779..65131b2 100644
      private func registerSharedCommands() {
          guard !sharedCommandsRegistered else { return }
          sharedCommandsRegistered = true
-@@ -224,7 +211,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -224,7 +202,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
      }
  
      private func publishNowPlaying() {
@@ -3788,7 +3825,24 @@ index dccd779..65131b2 100644
          MPNowPlayingInfoCenter.default().nowPlayingInfo = [
              MPMediaItemPropertyTitle: detail?.title ?? series.title,
              MPMediaItemPropertyAlbumTitle: series.source.isLongVideo ? series.source.label : "第\(episodes[i].ep)集",
-@@ -266,11 +253,9 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -250,6 +228,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+         activation = UUID()
+         save(force: true)
+         pip?.delegate = nil
++        pipObservation?.invalidate()
+         pipObservation = nil
+         statusObservation = nil
+         itemObservation = nil
+@@ -257,20 +236,15 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+         endObserver = nil
+         audioObservers.forEach(NotificationCenter.default.removeObserver)
+         audioObservers.removeAll()
+-        if let commands = nowPlaying?.remoteCommandCenter {
+-            [commands.playCommand, commands.pauseCommand, commands.togglePlayPauseCommand].forEach { $0.removeTarget(self) }
+-        }
+         if sharedCommandsRegistered {
+             let c = MPRemoteCommandCenter.shared()
+             [c.playCommand, c.pauseCommand, c.togglePlayPauseCommand].forEach { $0.removeTarget(self) }
              sharedCommandsRegistered = false
              MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
          }
@@ -3800,18 +3854,24 @@ index dccd779..65131b2 100644
          pipIdentity = nil
          pipActive = false
          pipPossible = false
-@@ -279,7 +264,9 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -279,7 +253,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
          engine.onPlaybackRequested = nil
          suppliedEngine?.stop()
          av.stop()
 -        aether?.stop()
-+        // Keep the system playback observers alive through the final item change.
 +        pip = nil
-+        nowPlaying = nil
          readyIndex = nil
          current = nil
          backgrounded = false
-@@ -560,10 +547,6 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -307,6 +281,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+         guard id != pipIdentity else { return }
+         guard !pipActive else { return }                 // never swap under a live PiP window
+         pipIdentity = id
++        pipObservation?.invalidate()
+         pipObservation = nil
+         pip?.delegate = nil
+         pip = nil
+@@ -560,10 +535,6 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
                      try await next.load(src, stream: chosen[i], start: start, title: title)
                  } catch is CancellationError {
                      return
@@ -3822,7 +3882,7 @@ index dccd779..65131b2 100644
                  }
                  guard activation == token else { return }
                  #if DEBUG
-@@ -578,9 +561,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -578,9 +549,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
                  if episodes.indices.contains(i + 1) {
                      Task { [weak self] in
                          guard let self, self.activation == token else { return }
@@ -3833,7 +3893,16 @@ index dccd779..65131b2 100644
                      }
                  }
                  if series.source == .hongguo {
-@@ -598,13 +579,8 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -588,7 +557,7 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+                     let next = episodes.indices.filter { $0 > i && $0 <= i + 3 }.map { episodes[$0].vid }
+                     Task { await HongguoClient.shared.prefetch(vids: next) }
+                 }
+-                if engineKind == .avplayer { _ = await nowPlaying?.becomeActiveIfPossible() } else { publishNowPlaying() }
++                publishNowPlaying()
+             } catch {
+                 guard activation == token else { return }
+                 errors[i] = error.localizedDescription
+@@ -598,13 +567,8 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
          }
      }
  
@@ -3848,7 +3917,7 @@ index dccd779..65131b2 100644
      }
  
      private func switchEngine(to next: PlayerEngine) {
-@@ -619,18 +595,10 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -619,18 +583,10 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
          if engineKind != next.kind { engineKind = next.kind }
      }
  
@@ -3868,7 +3937,7 @@ index dccd779..65131b2 100644
          if Self.canBypassProxy(src, stream: chosen[i]), !bypassProxy.contains(i) {
              #if DEBUG
              NSLog("%@", "[STV] proxy fallback → direct CDN")
-@@ -663,28 +631,15 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -663,28 +619,15 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
          case .file(let u): return AVURLAsset(url: u)
          case .direct(let u):
              guard u.path.hasSuffix(".mp4") else { return nil }
@@ -3900,7 +3969,7 @@ index dccd779..65131b2 100644
      private func prepare(_ i: Int) async throws -> Source {
          if let sourceResolver { return try await sourceResolver(i) }
          if let source = prepared[i] {
-@@ -698,7 +653,6 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -698,7 +641,6 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
          let want = chosen[i]
          let preferredId = SitePrefs.preferredStream[series.id]
          let bypass = bypassProxy.contains(i)
@@ -3908,7 +3977,7 @@ index dccd779..65131b2 100644
          let task = Task<Source, Error> { [weak self] in
              var stream = want
              if stream == nil {
-@@ -733,16 +687,17 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -733,16 +675,17 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
              case .mp4Clear where bypass:
                  guard let u = URL(string: s.url) else { throw ProviderError.invalid(s.url) }
                  return .remote(u, s.headers)
@@ -3933,7 +4002,7 @@ index dccd779..65131b2 100644
                  return .stream(HLSPlayback(headers: s.headers, keyHex: s.key), s.url)
              }
          }
-@@ -844,10 +799,8 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -844,10 +787,8 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
      private func play() {
          activateAudioSession()
          let rate = min(playbackRate, engine.maxRate)
@@ -3945,7 +4014,7 @@ index dccd779..65131b2 100644
      }
  
      private func bindTransportRequests(_ target: PlayerEngine) {
-@@ -945,9 +898,10 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
+@@ -945,9 +886,10 @@ final class PlaybackCoordinator: NSObject, @preconcurrency AVPictureInPictureCon
              lastTech = Date()
              let stream = chosen[i]
              let eng = engine
@@ -13320,7 +13389,7 @@ index 0000000..c18584a
 +
 +沿用上游 GPL-3.0 和相关版权声明，Perception 为 MIT。分发修改后的二进制时一并提供对应源码。
 diff --git a/project.yml b/project.yml
-index 8a41d6a..af447e3 100644
+index 8a41d6a..13dc2e7 100644
 --- a/project.yml
 +++ b/project.yml
 @@ -2,7 +2,7 @@ name: STV
@@ -13358,8 +13427,8 @@ index 8a41d6a..af447e3 100644
        GENERATE_INFOPLIST_FILE: YES
 -      MARKETING_VERSION: "1.5"
 -      CURRENT_PROJECT_VERSION: "14"
-+      MARKETING_VERSION: "1.11"
-+      CURRENT_PROJECT_VERSION: "21"
++      MARKETING_VERSION: "1.12"
++      CURRENT_PROJECT_VERSION: "22"
        SWIFT_EMIT_LOC_STRINGS: YES
        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
