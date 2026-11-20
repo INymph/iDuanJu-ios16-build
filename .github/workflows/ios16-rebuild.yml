@@ -1,0 +1,92 @@
+name: iOS 16 TrollStore IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios16-rebuild-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare independent upstream checkout
+        run: |
+          git clone https://github.com/my-name-is-alan/iDuanJu.git source
+          cd source
+          git checkout a13daac58a53bf750befd7d0b25c4b1fa9e8bc63
+          git apply --index ../ios16-migration.patch
+          git -c user.name='Codex' -c user.email='codex@users.noreply.github.com' commit -m 'Independent iOS 16 AVPlayer rebuild'
+          git rev-parse HEAD > "$RUNNER_TEMP/source-commit.txt"
+          git archive --format=zip --output="$RUNNER_TEMP/source.zip" HEAD
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - uses: actions/cache/restore@v4
+        id: build-cache
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            source/DerivedDataIOS16
+          key: ios16-derived-xcode164-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ios16-derived-xcode164-
+      - name: Build and validate iOS 16 device IPA
+        working-directory: source
+        run: bash scripts/package-trollstore.sh "$RUNNER_TEMP/dist"
+      - name: Upload IPA and matching source
+        run: |
+          cp "$RUNNER_TEMP/source.zip" "$RUNNER_TEMP/dist/iDuanJu-iOS16-source.zip"
+          cp "$RUNNER_TEMP/source-commit.txt" "$RUNNER_TEMP/dist/source-commit.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iDuanJu-iOS16-TrollStore
+          path: |
+            ${{ runner.temp }}/dist/*.ipa
+            ${{ runner.temp }}/dist/*source.zip
+            ${{ runner.temp }}/dist/SHA256SUMS.txt
+            ${{ runner.temp }}/dist/source-commit.txt
+          if-no-files-found: error
+      - name: Test AVPlayer and playback transport
+        working-directory: source
+        run: |
+          set -o pipefail
+          mkdir -p DerivedDataIOS16/Build/Products/Debug-iphonesimulator
+          OVERLAY=$(find /Library/Developer/CoreSimulator/Volumes -path '*/iOS 18.5.simruntime/Contents/Resources/RuntimeRoot/System/Cryptexes/OS/usr/lib/swift/libswiftWebKit.dylib' -print -quit 2>/dev/null || true)
+          test -f "$OVERLAY"
+          ln -sf "$OVERLAY" DerivedDataIOS16/Build/Products/Debug-iphonesimulator/libswiftWebKit.dylib
+          SIM=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for runtime,devices in json.load(sys.stdin)["devices"].items() if "iOS-18" in runtime for d in devices if d["name"].startswith("iPhone")))')
+          xcodebuild -skipMacroValidation -project STV.xcodeproj -scheme STV -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIM" -derivedDataPath DerivedDataIOS16 \
+            CODE_SIGNING_ALLOWED=NO ENABLE_DEBUG_DYLIB=NO -parallel-testing-enabled NO -test-timeouts-enabled YES -maximum-test-execution-time-allowance 120 \
+            -only-testing:STVTests/PlayerEngineTests \
+            -only-testing:STVTests/PlayerTransportTests \
+            -only-testing:STVTests/PlayerAdjustTests \
+            -only-testing:STVTests/IOS16PerformanceTests \
+            -only-testing:STVTests/AVPlayerPlaybackTests/testFixtureFilePlays \
+            -only-testing:STVTests/AVPlayerPlaybackTests/testTDLibProxyPlays \
+            -only-testing:STVUITests/PlayerUITests/testLandscapeEpisodePagingAndRotation \
+            -only-testing:STVUITests/PlayerUITests/testEpisodePanelPickKeepsCenterHidden \
+            -resultBundlePath "$RUNNER_TEMP/dist/logs/Playback.xcresult" \
+            test 2>&1 | tee "$RUNNER_TEMP/dist/logs/playback-tests.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios16-build-and-test-logs
+          path: ${{ runner.temp }}/dist/logs/
+      - uses: actions/cache/save@v4
+        if: always() && !cancelled()
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            source/DerivedDataIOS16
+          key: ios16-derived-xcode164-${{ github.run_id }}-${{ github.run_attempt }}
