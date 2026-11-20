@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -38,8 +38,8 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             source/DerivedDataIOS16
-          key: ios16-derived-xcode164-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ios16-derived-xcode164-
+          key: ios16-intel-derived-xcode164-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ios16-intel-derived-xcode164-
       - name: Build and validate iOS 16 device IPA
         working-directory: source
         run: bash scripts/package-trollstore.sh "$RUNNER_TEMP/dist"
@@ -89,4 +89,4 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             source/DerivedDataIOS16
-          key: ios16-derived-xcode164-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ios16-intel-derived-xcode164-${{ github.run_id }}-${{ github.run_attempt }}
