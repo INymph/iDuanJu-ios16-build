@@ -13434,7 +13434,7 @@ index 8a41d6a..13dc2e7 100644
        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
 diff --git a/scripts/package-trollstore.sh b/scripts/package-trollstore.sh
 new file mode 100644
-index 0000000..5dacd79
+index 0000000..07a2e9e
 --- /dev/null
 +++ b/scripts/package-trollstore.sh
 @@ -0,0 +1,33 @@
@@ -13448,7 +13448,7 @@ index 0000000..5dacd79
 +xcodegen generate
 +xcodebuild -skipMacroValidation -project STV.xcodeproj -scheme STV -configuration Release \
 +  -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath DerivedDataIOS16 \
-+  ARCHS=arm64 ONLY_ACTIVE_ARCH=NO IPHONEOS_DEPLOYMENT_TARGET=16.0 \
++  ONLY_ACTIVE_ARCH=NO IPHONEOS_DEPLOYMENT_TARGET=16.0 \
 +  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
 +  ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES ENABLE_DEBUG_DYLIB=NO \
 +  build 2>&1 | tee "$OUT/logs/ios16-build.log"
